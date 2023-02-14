@@ -1,0 +1,7 @@
+{
+  "ip_address": "Your ip address for home assistant",
+  "setting1": "message_sensor1",
+  "setting2": "devices/fake-campus/fake-building/fake-device/all",
+  "access_token": "Your access token",
+  "value_from_topic": ["fill", "EKG", "EKG_Cos", "Heartbeat", "filler"]
+}
