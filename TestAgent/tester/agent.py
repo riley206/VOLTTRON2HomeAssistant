@@ -8,6 +8,8 @@ import logging
 import sys
 from volttron.platform.agent import utils
 from volttron.platform.vip.agent import Agent, Core, RPC
+from datetime import timedelta as td, datetime as dt
+from volttron.platform.agent.utils import format_timestamp, get_aware_utc_now
 import requests
 from requests import get
 import json
@@ -99,8 +101,10 @@ class Tester(Agent):
         self.setting2 = setting2
         self.access_token = access_token
         self.value_from_topic = value_from_topic
+        
 
         self._create_subscriptions(self.setting2)
+        
 
     def _create_subscriptions(self, topic):
         """
@@ -117,39 +121,107 @@ class Tester(Agent):
         """
         Callback triggered by the subscription setup using the topic from the agent's config file
         """
+        def turning_on_light(light_entity_id): # Function to turn on lights
+            url2 = f"http://{self.ip_address}:8123/api/services/light/turn_on"
 
-        values_from_topics = self.value_from_topic.split("', '") 
+            headers = {
+                        "Authorization": f"Bearer {self.access_token}",
+                        "Content-Type": "application/json",
+                    }
+            payload = {
+                        "entity_id": f"{light_entity_id}"
+                    }
+            response = requests.post(url2, headers=headers, data=json.dumps(payload))
 
-        for member1 in values_from_topics:
+        def turning_off_light(light_entity_id): # Function to turn off lights
+            url3 = f"http://{self.ip_address}:8123/api/services/light/turn_off"
+
+            headers = {
+                        "Authorization": f"Bearer {self.access_token}",
+                        "Content-Type": "application/json",
+                    }
+            payload = {
+                        "entity_id": f"{light_entity_id}"
+                    }
+            response = requests.post(url3, headers=headers, data=json.dumps(payload))
+
+        def retreive_device_states_from_HomeAssistant(entity_id): #make entity id come from config file and loop through all of the entities we want
+            url1 = f"http://{self.ip_address}:8123/api/states/{entity_id}"
+            response = requests.get(url1, headers=headers)
+            data = response.json()
+            sensor_state = data["state"] # the state for our textbox
+            _log.info(f"The state of the sensor is: {sensor_state}")
+            
+            
+        
+
+        _log.info("################################ START OF LOOP   ############################")
+        values_from_topics = self.value_from_topic.split("', '") #config is split by quote, comma, space, quote ", "
+        for member1 in values_from_topics: # nested for loop to compare values from the config and whats in the fake driver (or whatever device specified in setting2)
             for element in message:
                 if member1 in element:
-                    print("member1", member1)
-                    print(f"{member1} = {element}")
-                    data1 = json.dumps(element[f"{member1}"])
-                    print(f"{member1} ::: {data1}")
+                    
+                    data1 = json.dumps(element[f"{member1}"]) #data 1 is the json dump of the member from member as a string
+                    _log.info(f"Matching Value Found: {member1} with data: {data1}")
                     url = f"http://{self.ip_address}:8123/api/states/sensor.{member1}"
-                    print(f"url {url}")
                     headers = {
                         "Authorization": f"Bearer {self.access_token}",
                         "Content-Type": "application/json",
                     }
+
+                    ###############################################################
+                    # retreiving from home assistant
+                    entity_id = "light.philips_440400982842_huelight"
+                    retreive_device_states_from_HomeAssistant(entity_id)
+                    
+
+
+                    #turning off/on a light
+                    light_entity_id = "light.philips_440400982842_huelight"
+                    turning_on_light(light_entity_id) # call function to turn on/off light
+
+
+                    #############################################################
+                    # chaning a fake driver value
+                    value2 = 10000000
+                    topic = "fake-campus/fake-building/fake-device"
+                    REQUESTER_ID = 'requester_id'
+                    point = 'SampleWritableFloat1'
+                    TASK_ID = 'task_id'
+                    # Example RPC call
+                    _now = get_aware_utc_now()
+                    str_now = format_timestamp(_now)
+                    _end = _now + td(seconds=10)
+                    str_end = format_timestamp(_end)
+                    schedule_request = [[topic, str_now, str_end]]
+                    # Request a new schedule
+                    result = self.vip.rpc.call(
+                        'platform.actuator', 'request_new_schedule', REQUESTER_ID, TASK_ID, 'HIGH')
+                    # Set the point value
+                    result = self.vip.rpc.call(
+                        'platform.actuator', 'set_point', REQUESTER_ID, topic, value2, point)
+                    print(result)
+                    #############################################################
+                    
+     
                     data2 = f'{{"state": {data1}}}'
-                    print(f"data2 {data2}")
-                    response = requests.post(url, headers=headers, data=data2) # posted data to HA is data2.
-                    response2 = requests.get(url, headers=headers, data=data2) # getting it back again
-                    print(f"response2 {response2}")
-                    print(f"retrieved data2 {data2}")
-                    if response.status_code == 200:
-                        print(f"----------Sent {data2} successfully----------")
-                    else:
-                        print(f"Failed to send {data2} to Home Assistant")
+                    try: #sometimes it wont connect and wont throw a status code if you are on the wrong network. 
+                        response = requests.post(url, headers=headers, data=data2) # posted data to HA is data2. maybe create a try
+                        if response.status_code == 200:
+                            _log.info(f"----------Sent {data2} from {member1} successfully----------")
+                        else:
+                            _log.info(f"Failed to send {data2} to Home Assistant")
+                    except requests.exceptions.ConnectionError as e:
+                        print(f"\n-----Connection Error, make sure you are on the same network as home assistant----- {e}\n")
                     break
                 else:
-                    print(f"{member1} not in {element}")
+                    _log.info(f"{member1} not in {self.setting2}")
             else:
-                print(f"{element} not in message")        
+                _log.info(f"an element was not found in message")        
         else:
-            print(f"{member1} not in {values_from_topics}")        
+            _log.info(f"{member1} not found in Values from topic")
+            _log.info("################################ END OF LOOP ################################")
+        
   
 
     @Core.receiver("onstart")
@@ -163,12 +235,52 @@ class Tester(Agent):
         Usually not needed if using the configuration store.
         """
         # Example publish to pubsub
-        self._create_subscriptions(self.setting2)
-        self.vip.pubsub.publish('pubsub', "some/random/topic", message="HI!")
+        
+        #self.vip.pubsub.publish('pubsub', "some/random/topic", message="HI!")
+        ###############################################################
+        # retreiving from home assistant
+        # headers = {
+        #         "Authorization": f"Bearer {self.access_token}",
+        #         "Content-Type": "application/json",
+        # }
+        # url1 = f"http://{self.ip_address}:8123/api/states/input_text.example_textbox"
+        # response = requests.get(url1, headers=headers) #we already specified the header we can reuse it
+        # data = response.json()
+        # sensor_state = data["state"] # the state for our textbox
+        # print(f"The state of the sensor is: {sensor_state}")
+        # #############################################################
+        
+        # value2 = sensor_state
+        # topic = "fake-campus/fake-building/fake-device"
+        # REQUESTER_ID = 'requester_id'
+        # point = 'SampleWritableFloat1'
+        # TASK_ID = 'task_id'
+        # # Example RPC call
+        # # self.vip.rpc.call("some_agent", "some_method", arg1, arg2)
+        # _now = get_aware_utc_now()
+        # str_now = format_timestamp(_now)
+        # _end = _now + td(seconds=10)
+        # str_end = format_timestamp(_end)
 
-        # Example RPC call
-        # self.vip.rpc.call("some_agent", "some_method", arg1, arg2)
+        # schedule_request = [[topic, str_now, str_end]]
+        # # Request a new schedule
+        # result = self.vip.rpc.call(
+        #     'platform.actuator', 'request_new_schedule', REQUESTER_ID, TASK_ID, 'HIGH')
 
+        # # Set the point value
+        # result = self.vip.rpc.call(
+        #     'platform.actuator', 'set_point', REQUESTER_ID, topic, value2, point)
+        # print(result)
+
+        
+
+
+        # # Call the set_point function on the actuator agent
+        # Make an RPC call to the set_point method of the Actuator agent to change the point value
+        
+        
+
+    
     @Core.receiver("onstop")
     def onstop(self, sender, **kwargs):
         """
@@ -185,7 +297,7 @@ class Tester(Agent):
         May be called from another agent via self.core.rpc.call
         """
         return self.setting1 + arg1 - arg2
-
+    
 
 def main():
     """Main method called to start the agent."""
